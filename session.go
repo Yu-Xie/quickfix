@@ -208,7 +208,28 @@ func (s *session) resend(msg *Message) bool {
 	return s.application.ToApp(msg, s.sessionID) == nil
 }
 
-// queueForSend will validate, persist, and queue the message for send
+// queueBatchAppsForSend will validate, persist, and queue the messages for send.
+func (s *session) queueBatchAppsForSend(msg []*Message) error {
+	s.sendMutex.Lock()
+	defer s.sendMutex.Unlock()
+
+	msgBytes, err := s.prepBatchAppMessagesForSend(msg)
+	if err != nil {
+		return err
+	}
+
+	for _, mb := range msgBytes {
+		s.toSend = append(s.toSend, mb)
+		select {
+		case s.messageEvent <- true:
+		default:
+		}
+	}
+
+	return nil
+}
+
+// queueForSend will validate, persist, and queue the message for send.
 func (s *session) queueForSend(msg *Message) error {
 	s.sendMutex.Lock()
 	defer s.sendMutex.Unlock()
@@ -280,6 +301,30 @@ func (s *session) dropAndSendInReplyTo(msg *Message, inReplyTo *Message) error {
 	return nil
 }
 
+func (s *session) prepBatchAppMessagesForSend(msg []*Message) (msgBytes [][]byte, err error) {
+	seqNum := s.store.NextSenderMsgSeqNum()
+	for i, m := range msg {
+		s.fillDefaultHeader(m, nil)
+		m.Header.SetField(tagMsgSeqNum, FIXInt(seqNum+i))
+		msgType, err := m.Header.GetBytes(tagMsgType)
+		if err != nil {
+			return nil, err
+		}
+		if isAdminMessageType(msgType) {
+			return nil, fmt.Errorf("cannot send admin messages in batch")
+		}
+		if errToApp := s.application.ToApp(m, s.sessionID); errToApp != nil {
+			return nil, errToApp
+		}
+		msgBytes = append(msgBytes, m.build())
+	}
+	err = s.persistBatch(seqNum, msgBytes)
+	if err != nil {
+		return nil, err
+	}
+	return msgBytes, nil
+}
+
 func (s *session) prepMessageForSend(msg *Message, inReplyTo *Message) (msgBytes []byte, err error) {
 	s.fillDefaultHeader(msg, inReplyTo)
 	seqNum := s.store.NextSenderMsgSeqNum()
@@ -321,6 +366,14 @@ func (s *session) prepMessageForSend(msg *Message, inReplyTo *Message) (msgBytes
 	err = s.persist(seqNum, msgBytes)
 
 	return
+}
+
+func (s *session) persistBatch(seqNum int, msgBytes [][]byte) error {
+	if !s.DisableMessagePersist {
+		return s.store.SaveMessagesAndIncrNextSenderMsgSeqNum(seqNum, msgBytes)
+	}
+
+	return s.store.SetNextSenderMsgSeqNum(seqNum + len(msgBytes))
 }
 
 func (s *session) persist(seqNum int, msgBytes []byte) error {

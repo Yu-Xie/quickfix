@@ -39,7 +39,11 @@ type fileStore struct {
 	targetSeqNumsFile  *os.File
 }
 
-// NewFileStoreFactory returns a file-based implementation of MessageStoreFactory
+func (store *fileStore) SaveMessagesAndIncrNextSenderMsgSeqNum(seqNum int, msg [][]byte) error {
+	return errors.New("not implemented")
+}
+
+// NewFileStoreFactory returns a file-based implementation of MessageStoreFactory.
 func NewFileStoreFactory(settings *Settings) MessageStoreFactory {
 	return fileStoreFactory{settings: settings}
 }
